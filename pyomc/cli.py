@@ -36,6 +36,10 @@ def add_network_options(parser: argparse.ArgumentParser) -> None:
         metavar="IP",
         help="IPv4 broadcast address (default: 255.255.255.255)",
     )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="log every packet sent/received and authentication step to stderr",
+    )
     parser.add_argument("--timeout", type=float, default=2.0, help="seconds to await each response")
     parser.add_argument("--attempts", type=int, default=2, help="send attempts per operation")
     parser.add_argument(

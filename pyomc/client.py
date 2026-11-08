@@ -6,6 +6,7 @@ from collections import OrderedDict
 import ipaddress
 import select
 import socket
+import sys
 import time
 from typing import Dict, Iterable, Optional, Sequence, Tuple
 
@@ -21,7 +22,9 @@ class OMCClient:
         broadcast: str = "255.255.255.255",
         timeout: float = 2.0,
         attempts: int = 2,
+        verbose: bool = False,
     ) -> None:
+        self.verbose = verbose
         self.interface = interface
         self.broadcast = broadcast
         self.timeout = timeout
@@ -32,6 +35,21 @@ class OMCClient:
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.sock.bind((interface, PORT))
         self.sock.setblocking(False)
+
+    def _log(self, message: str) -> None:
+        if self.verbose:
+            print("[pyomc] " + message, file=sys.stderr, flush=True)
+
+    @staticmethod
+    def _describe(data: bytes) -> str:
+        try:
+            ident, mac, action, payload = parse_packet(data)
+        except ProtocolError as exc:
+            return "undecodable (%s) %s" % (exc, data.hex())
+        keys = ",".join(parse_parameters(payload)) if action & 0x0F in (1, 2, 5) else ""
+        return "ident=%d mac=%s action=0x%02x payload=%dB%s" % (
+            ident, mac, action, len(payload), " keys=" + keys if keys else "",
+        )
 
     def close(self) -> None:
         self.sock.close()
@@ -191,14 +209,33 @@ class OMCClient:
             destination = socket.gethostbyname(proxy if proxy is not None else address)
             expected_action = V2_ACTION[action] if challenge is not None else action
             response = None  # type: Optional[OrderedDict[str, str]]
-            for _ in range(self.attempts):
+            rejected = None  # type: Optional[int]
+            self._log(
+                "round %d: sending action 0x%02x to %s (%s)"
+                % (auth_round + 1, action if challenge is None else V2_ACTION[action], destination,
+                   "authenticated" if challenge is not None else "unauthenticated")
+            )
+            for attempt in range(self.attempts):
                 self.sock.sendto(packet, (destination, PORT))
+                self._log("  tx attempt %d: %s" % (attempt + 1, self._describe(packet)))
                 deadline = time.monotonic() + self.timeout
                 for data, source in self._receive_until(deadline):
+                    self._log("  rx from %s: %s" % (source, self._describe(data)))
                     try:
                         reply_ident, reply_mac, reply_action, reply_payload = parse_packet(data)
                     except ProtocolError:
                         continue
+                    if (
+                        challenge is not None
+                        and source == destination
+                        and reply_ident == ident
+                        and reply_mac == normalize_mac(mac)
+                        and reply_action == (expected_action | 0x20)
+                    ):
+                        rejected = reply_action
+                        self._log("  RFP replied with 0x%02x instead of 0x%02x: treating as rejection"
+                                  % (reply_action, expected_action | 0x10))
+                        break
                     if (
                         source == destination
                         and reply_ident == ident
@@ -207,8 +244,13 @@ class OMCClient:
                     ):
                         response = parse_parameters(reply_payload)
                         break
-                if response is not None:
+                if response is not None or rejected is not None:
                     break
+            if rejected is not None:
+                raise PermissionError(
+                    "%s rejected the authenticated request (reply action 0x%02x); "
+                    "check the OMM username/password" % (mac, rejected)
+                )
             if response is None:
                 if challenge is not None:
                     raise PermissionError("%s authentication failed or timed out" % mac)

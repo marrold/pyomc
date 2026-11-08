@@ -36,7 +36,8 @@ def credentials(args: argparse.Namespace) -> Tuple[Optional[str], Optional[str]]
 
 
 def client_from_args(args: argparse.Namespace) -> OMCClient:
-    return OMCClient(args.interface, args.broadcast, args.timeout, args.attempts)
+    return OMCClient(args.interface, args.broadcast, args.timeout, args.attempts,
+                     getattr(args, "verbose", False))
 
 
 def confirm_write(args: argparse.Namespace, warning: str) -> bool:
